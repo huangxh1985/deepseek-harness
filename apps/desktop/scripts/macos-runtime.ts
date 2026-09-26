@@ -19,6 +19,21 @@ function magic(path: string): string {
   } finally { closeSync(descriptor) }
 }
 
+/** Mach-O header filetype; 2 marks a main executable, which is the only kind codesign embeds entitlements into. */
+function machOFileType(path: string): number {
+  const descriptor = openSync(path, 'r')
+  try {
+    const header = Buffer.alloc(16)
+    if (readSync(descriptor, header, 0, 16, 0) !== 16) return 0
+    const value = header.subarray(0, 4).toString('hex')
+    // Swapped magics (c?faedfe) store little-endian fields; feedfac? store big-endian.
+    const littleEndian = value === 'cefaedfe' || value === 'cffaedfe'
+    const bigEndian = value === 'feedface' || value === 'feedfacf'
+    if (!littleEndian && !bigEndian) return 0
+    return littleEndian ? header.readUInt32LE(12) : header.readUInt32BE(12)
+  } finally { closeSync(descriptor) }
+}
+
 /**
  * Sign and verify every materialized Mach-O file, awaiting all signers on failure.
  * @param root - Self-contained production runtime without symlinks.
@@ -40,10 +55,17 @@ export async function signMacOSRuntime(
       const path = files[next++]
       if (path === undefined) return
       const identifier = `${appId}.runtime.${createHash('sha256').update(path).digest('hex')}`
+      const file = join(root, path)
       const needsJit = path === 'dependencies/node/bin/node'
         || /^node_modules\/@deepseek-ai\/libreoffice-kit-darwin-(?:arm64|x64)\/bin\/libreoffice-kit$/u.test(path)
-      const entitlements = needsJit ? join(import.meta.dirname, 'jit-entitlements.plist') : undefined
-      const file = join(root, path)
+      // DSH_LOCAL_SIGNING=1 builds sign with a self-signed identity that has no Apple
+      // TeamIdentifier; library validation then rejects even same-identity loads, so every
+      // main executable disables it. codesign silently drops entitlements on dylibs and
+      // bundles, and library validation is enforced by the loading executable anyway.
+      const executable = machOFileType(file) === 2
+      const entitlements = process.env.DSH_LOCAL_SIGNING === '1' && executable
+        ? join(import.meta.dirname, 'local-entitlements.plist')
+        : needsJit ? join(import.meta.dirname, 'jit-entitlements.plist') : undefined
       const thin = ['cefaedfe', 'cffaedfe', 'feedface', 'feedfacf'].includes(magic(file))
       if (cacheDirectory !== undefined && policy !== undefined && thin) {
         if (await cachedMacOSSignature(file, cacheDirectory, policy(identifier, expected, entitlements))) hits++
@@ -56,7 +78,10 @@ export async function signMacOSRuntime(
   })
   const results = await Promise.allSettled(workers)
   const errors = results.filter(result => result.status === 'rejected').map(result => result.reason as unknown)
-  if (errors.length > 0) throw new AggregateError(errors, 'desktop runtime: native signing failed')
+  if (errors.length > 0) {
+    const causes = errors.map(error => error instanceof Error ? error.message : String(error)).join('; ')
+    throw new AggregateError(errors, `desktop runtime: native signing failed: ${causes}`)
+  }
   if (cacheDirectory !== undefined) {
     pruneMacOSSignatureCache(cacheDirectory)
     console.info(`desktop macOS signing cache: ${hits} hits, ${misses} misses, ${files.length - hits - misses} uncached`)

@@ -53,7 +53,8 @@ export function macOSCachePolicy(probe: string):
         assertMacOSRuntimeSignatureDetails(actual.details, expected)
         if (actual.certificate !== certificate || !actual.details.split(/\r?\n/u).includes(`Identifier=${identifier}`)
           || !isDeepStrictEqual(actual.entitlements, desired)) {
-          throw new Error('macOS signature cache: signature does not match certificate, identifier, or entitlements')
+          const checks = `cert=${String(actual.certificate === certificate)}, identifier=${String(actual.details.split(/\r?\n/u).includes(`Identifier=${identifier}`))}, entitlements=${String(isDeepStrictEqual(actual.entitlements, desired))}`
+          throw new Error(`macOS signature cache: signature does not match certificate, identifier, or entitlements (${path}: ${checks})`)
         }
       },
     }

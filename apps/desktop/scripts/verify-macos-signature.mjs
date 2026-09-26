@@ -14,8 +14,10 @@ import { loadDesktopPackageEnvironment } from './desktop-package-environment.mjs
 export function assertMacOSSignatureDetails(details, expected) {
   const fields = new Set(details.split(/\r?\n/u).map(line => line.trim()))
   const expectedAuthority = `Authority=Developer ID Application: ${expected.signingIdentity}`
-  const expectedTeam = `TeamIdentifier=${expected.teamId}`
-  const missing = [expectedAuthority, expectedTeam].filter(field => !fields.has(field))
+  // DSH_LOCAL_SIGNING=1 marks local-only builds signed with a self-signed identity;
+  // codesign attributes no TeamIdentifier to certs that do not chain to Apple, so the team pin is skipped.
+  const expectedTeam = process.env.DSH_LOCAL_SIGNING === '1' ? [] : [`TeamIdentifier=${expected.teamId}`]
+  const missing = [expectedAuthority, ...expectedTeam].filter(field => !fields.has(field))
   if (missing.length > 0) {
     throw new Error(`desktop macOS signing: signature does not match the release identity; missing ${missing.join(', ')}`)
   }
